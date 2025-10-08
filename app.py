@@ -6,24 +6,25 @@ import faiss
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 
 # ----------------------------------------------------------
-# 1. Load PDFs and split into chunks
+# 1. Streamlit setup
 # ----------------------------------------------------------
 st.set_page_config(page_title="📱 Gadget PDF Assistant", layout="wide")
 
 st.title("📘 Gadget PDF Assistant")
 st.markdown("Ask questions about your uploaded gadget manuals, brochures, or specs (PDFs).")
 
-# Folder for your PDF files
 DATA_FOLDER = "Docs"
-
 if not os.path.exists(DATA_FOLDER):
     os.makedirs(DATA_FOLDER)
 
-# PDF Upload
-uploaded_files = st.file_uploader("📂 Upload your Gadget PDFs", type=["pdf"], accept_multiple_files=True)
+# ----------------------------------------------------------
+# 2. File Upload Section
+# ----------------------------------------------------------
+uploaded_files = st.file_uploader(
+    "📂 Upload your Gadget PDFs", type=["pdf"], accept_multiple_files=True
+)
 
 if uploaded_files:
     for file in uploaded_files:
@@ -32,72 +33,88 @@ if uploaded_files:
     st.success(f"✅ {len(uploaded_files)} file(s) saved successfully!")
 
 # ----------------------------------------------------------
-# 2. Load documents using LangChain loaders
+# 3. Function to build or load FAISS index
 # ----------------------------------------------------------
-loader = DirectoryLoader(DATA_FOLDER, glob="**/*.pdf", loader_cls=PyPDFLoader)
-documents = loader.load()
+@st.cache_resource(show_spinner=True)
+def load_index(data_folder):
+    loader = DirectoryLoader(data_folder, glob="**/*.pdf", loader_cls=PyPDFLoader)
+    documents = loader.load()
 
-if not documents:
-    st.warning("Please upload PDFs to continue.")
-    st.stop()
+    if not documents:
+        return None, None, None
 
-# ----------------------------------------------------------
-# 3. Chunking documents
-# ----------------------------------------------------------
-st.write("📑 Splitting PDFs into chunks...")
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
-chunks = text_splitter.split_documents(documents)
-st.write(f"Total Chunks: {len(chunks)}")
+    # Split documents into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+    chunks = text_splitter.split_documents(documents)
+    texts = [chunk.page_content for chunk in chunks]
 
-# ----------------------------------------------------------
-# 4. Create SentenceTransformer embeddings
-# ----------------------------------------------------------
-st.write("🧠 Generating embeddings...")
-model = SentenceTransformer("all-MiniLM-L6-v2")  # small & fast
-texts = [chunk.page_content for chunk in chunks]
-embeddings = model.encode(texts, convert_to_numpy=True)
+    # Generate embeddings
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    embeddings = model.encode(texts, convert_to_numpy=True)
 
-# ----------------------------------------------------------
-# 5. Build FAISS index
-# ----------------------------------------------------------
-dim = embeddings.shape[1]
-index = faiss.IndexFlatL2(dim)
-index.add(embeddings)
-st.write(f"✅ FAISS index built with {index.ntotal} vectors.")
+    # Build FAISS index
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+
+    return model, index, texts
 
 # ----------------------------------------------------------
-# 6. Question Answer Retrieval
+# 4. Initialize or reuse session state
+# ----------------------------------------------------------
+if "index" not in st.session_state:
+    with st.spinner("🔍 Loading and indexing your PDFs..."):
+        model, index, texts = load_index(DATA_FOLDER)
+        if index is None:
+            st.warning("Please upload PDFs to continue.")
+            st.stop()
+        st.session_state.model = model
+        st.session_state.index = index
+        st.session_state.texts = texts
+else:
+    model = st.session_state.model
+    index = st.session_state.index
+    texts = st.session_state.texts
+
+st.success(f"✅ FAISS index loaded with {index.ntotal} chunks.")
+
+# ----------------------------------------------------------
+# 5. Question Answering Section
 # ----------------------------------------------------------
 st.subheader("💬 Ask a Question About Your Gadgets")
 
-query = st.text_input("Type your question:")
+query = st.text_input("Type your question here:")
 
 if st.button("🔍 Get Answer"):
     if query.strip() == "":
-        st.warning("Please enter a question.")
+        st.warning("Please enter a valid question.")
     else:
-        query_embedding = model.encode([query], convert_to_numpy=True)
-        D, I = index.search(query_embedding, k=3)
+        with st.spinner("🔎 Searching best matches..."):
+            query_embedding = model.encode([query], convert_to_numpy=True)
+            D, I = index.search(query_embedding, k=3)
 
-        results = [texts[i] for i in I[0]]
+            results = [texts[i] for i in I[0]]
 
-        # Display most relevant context
         st.write("### 📄 Top Matching Contexts:")
         for i, res in enumerate(results):
             with st.expander(f"Context {i+1}"):
                 st.write(res)
 
-        # Generate simple answer (local summarization)
-        st.write("### 🤖 Assistant’s Answer:")
+        # Combine and trim context for a simple local answer
+        combined_context = " ".join(results)
         answer_text = (
-            "Based on the most relevant context:\n\n" + results[0][:800] + "..."
+            f"**Answer based on your query '{query}':**\n\n"
+            + combined_context[:800]
+            + "..."
             if results
-            else "Sorry, no relevant information found in the PDFs."
+            else "Sorry, I couldn't find relevant info in the PDFs."
         )
+
+        st.write("### 🤖 Assistant’s Answer:")
         st.info(answer_text)
 
 # ----------------------------------------------------------
-# 7. Footer
+# 6. Footer
 # ----------------------------------------------------------
 st.markdown("---")
 st.caption("⚙️ Offline Gadget PDF Assistant | Built with SentenceTransformer + FAISS + Streamlit")
