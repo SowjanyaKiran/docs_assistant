@@ -1,0 +1,21 @@
+# Core packages
+streamlit
+numpy
+pandas
+faiss-cpu
+sentence-transformers
+scikit-learn
+
+# PDF handling
+PyMuPDF
+pypdf
+langchain
+langchain-community
+langchain-core
+
+# Text utilities
+tqdm
+nltk
+
+# Optional but helpful for debugging/enhancements
+python-dotenv
